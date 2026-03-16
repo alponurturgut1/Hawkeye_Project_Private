@@ -1,0 +1,6 @@
+opencv-python
+numpy
+pymavlink
+pyyaml
+onnxruntime
+# onnxruntime-gpu  # NVIDIA varsa bunu kur

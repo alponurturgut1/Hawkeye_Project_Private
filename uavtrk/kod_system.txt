@@ -1,0 +1,224 @@
+import time
+import yaml
+import cv2
+import threading
+
+from .utils import setup_logger, RateLimiter
+from .state import SystemState
+from .camera import CameraProcessor
+from .yolo_onnx import YOLODetector
+from .tracker import ObjectTracker
+from .mavlink_iface import MavlinkVehicle
+from .follow import PositionBasedFollow, bearing_error_from_bbox
+
+class DroneTrackingSystem:
+    def __init__(self, config_path: str):
+
+        with open(config_path, "r") as f:
+            self.cfg = yaml.safe_load(f)
+        ###
+        self.latest_frame = None
+        self.latest_detections = []
+        self.latest_track = None
+        self.running = True
+        ###
+        self.log = setup_logger(self.cfg["system"].get("log_level", "INFO"))
+        self.state = SystemState.INITIALIZING
+
+        """
+        # Camera
+        vcfg = self.cfg["video"]
+        self.camera = CameraProcessor(
+            use_gstreamer=vcfg.get("use_gstreamer", True),
+            gst_pipeline=vcfg.get("gstreamer_pipeline", ""),
+            opencv_source=vcfg.get("opencv_source", 0),
+            width=int(vcfg.get("width", 1280)),
+            height=int(vcfg.get("height", 720)),
+        )
+         """
+        # --- GÜNCELLENEN KISIM: Camera (UDP Port üzerinden) ---
+        vcfg = self.cfg["video"]
+        # Artık GStreamer pipeline veya OpenCV source kullanmıyoruz.
+        # Doğrudan UDP ayarlarına odaklanıyoruz.
+        self.camera = CameraProcessor(
+            udp_ip=vcfg.get("udp_ip", "127.0.0.1"),
+            udp_port=int(vcfg.get("udp_port", 5600)),
+            width=int(vcfg.get("width", 640)),   # Gazebo kamerasının genişliği
+            height=int(vcfg.get("height", 480))  # Gazebo kamerasının yüksekliği
+        )
+
+
+        # YOLO
+        ycfg = self.cfg["yolo"]
+        self.detector = YOLODetector(
+            onnx_path=ycfg["onnx_path"],
+            input_size=int(ycfg.get("input_size", 640)),
+            conf_thres=float(ycfg.get("conf_thres", 0.35)),
+            iou_thres=float(ycfg.get("iou_thres", 0.45)),
+            class_name=str(ycfg.get("class_name", "drone")),
+            providers=ycfg.get("providers", ["CPUExecutionProvider"]),
+        )
+
+        # Tracker
+        tcfg = self.cfg["tracking"]
+        self.tracker = ObjectTracker(
+            iou_match_thres=float(tcfg.get("iou_match_thres", 0.30)),
+            max_lost_frames=int(tcfg.get("max_lost_frames", 20)),
+            smooth_alpha=float(tcfg.get("smooth_alpha", 0.25)),
+        )
+
+        # MAVLink
+        mcfg = self.cfg["mavlink"]
+        self.hunter = MavlinkVehicle(mcfg["hunter"]["conn"], int(mcfg["hunter"]["sysid"]), "HUNTER")
+        self.target = MavlinkVehicle(mcfg["target"]["conn"], int(mcfg["target"]["sysid"]), "TARGET(IRIS)")
+
+        # Follow strategy
+        fcfg = self.cfg["follow"]
+        self.follow = PositionBasedFollow(
+            follow_alt_m=float(fcfg.get("follow_alt_m", 60.0)),
+            follow_distance_m=float(fcfg.get("follow_distance_m", 120.0)),
+            bearing_kp=float(fcfg.get("bearing_kp", 0.9)),
+            max_bearing_deg=float(fcfg.get("max_bearing_deg", 35.0)),
+        )
+
+        self.repos_limiter = RateLimiter(float(fcfg.get("reposition_period_s", 0.3)))
+        self.lost_timeout_s = float(fcfg.get("lost_timeout_s", 4.0))
+        self.home_rtl_on_lost = bool(fcfg.get("home_rtl_on_lost", True))
+        self.display = bool(self.cfg["system"].get("display", True))
+        self.target_fps = float(self.cfg["system"].get("target_fps", 30))
+
+        self._last_seen_t = 0.0
+
+    def run(self):
+        self.log.info("Connecting MAVLink...")
+        self.hunter.connect()
+        self.target.connect()
+        self.log.info("MAVLink connected.")
+
+        self.log.info("Starting camera...")
+        self.camera.start()
+        self.log.info("Camera started.")
+
+        # Hunter GUIDED’e al (ArduPlane)
+        try:
+            self.hunter.set_mode("GUIDED")
+            self.log.info("Hunter GUIDED moda alındı.")
+        except Exception as e:
+            self.log.warning(f"Hunter GUIDED set edilemedi: {e}")
+
+        self.state = SystemState.DETECTING
+        self.log.info("System state: DETECTING")
+
+        # FPS control: inference loop çok hızlıysa throttle
+        min_dt = 1.0 / max(5.0, self.target_fps)
+        
+        ##
+        yolo_thread = threading.Thread(target=self._yolo_worker, daemon=True)
+        yolo_thread.start()
+        ##
+        
+        t_prev = time.time()
+        frame_count = 0
+        dets=[]
+        track = None
+        fps_start_time = time.time()
+        fps_counter = 0
+        display_fps = 0
+
+        while True:
+            # poll MAVLink
+            for _ in range(5):
+                self.hunter.poll()
+                self.target.poll()
+
+            frame = self.camera.get_frame()
+            if frame is None:
+                time.sleep(0.005)
+                continue
+
+            # Inference FPS throttle (gerekirse)
+            now = time.time()
+            dt = now - t_prev
+            if dt < min_dt:
+                
+                now = time.time()
+            t_prev = now
+
+            frame_count += 1
+            fps_counter += 1
+            
+            #
+      
+
+            if frame_count % 10 == 0:
+                dets = self.detector.detect(frame)
+                track = self.tracker.update(dets)
+
+            if track is not None:
+                self._last_seen_t = now
+                self.state = SystemState.FOLLOWING
+            else:
+                if self.state == SystemState.FOLLOWING and (now - self._last_seen_t) > self.lost_timeout_s:
+                    self.state = SystemState.LOST_TARGET
+                elif self.state != SystemState.FOLLOWING:
+                    self.state = SystemState.DETECTING
+
+            # FOLLOW logic
+            if self.state == SystemState.FOLLOWING:
+                if self._has_target_telemetry():
+                    # bearing error from image
+                    cx, cy = track.center()
+                    bearing_err = bearing_error_from_bbox(frame.shape[1], cx, hfov_deg=78.0)
+
+                    # target heading (iris hud heading gelmeyebilir; yoksa hunter heading kullan)
+                    target_heading = self.target.hdg_deg if self.target.hdg_deg is not None else (self.hunter.hdg_deg or 0.0)
+
+                    # Takip noktası hesapla (Lat, Lon, Alt)
+                    lat_sp, lon_sp, alt_sp = self.follow.compute_follow_point(
+                        self.target.lat, self.target.lon, target_heading, bearing_err
+                    )
+                    # ArduPilot'a komut gönder
+                    if self.repos_limiter.ready():
+                        self.hunter.cmd_do_reposition(lat_sp, lon_sp, alt_sp)
+
+            elif self.state == SystemState.LOST_TARGET:
+                if self.home_rtl_on_lost:
+                    try:
+                        self.hunter.cmd_rtl()
+                        self.state = SystemState.RETURNING_HOME
+                        self.log.warning("Target lost -> RTL")
+                    except Exception as e:
+                        self.log.warning(f"RTL failed: {e}")
+
+            # overlay + display
+            if self.display:
+                self._draw_overlay(frame, dets, track)
+                cv2.imshow("Hunter Tracking", frame)
+                if cv2.waitKey(1) & 0xFF == 27:
+                    break
+            
+        self.camera.stop()
+        cv2.destroyAllWindows()
+
+    def _has_target_telemetry(self) -> bool:
+        return (self.target.lat is not None and self.target.lon is not None)
+
+    def _draw_overlay(self, frame, dets, track):
+        # detections (Yeşil)
+        for d in dets:
+            x1,y1,x2,y2 = map(int, d.bbox_xyxy)
+            cv2.rectangle(frame, (x1,y1), (x2,y2), (0,255,0), 2)
+            cv2.putText(frame, f"{d.class_name} {d.conf:.2f}", (x1, max(0,y1-5)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
+
+        # track (Kırmızı)
+        if track is not None:
+            x1,y1,x2,y2 = map(int, track.bbox_xyxy)
+            cv2.rectangle(frame, (x1,y1), (x2,y2), (0,0,255), 2)
+            cv2.putText(frame, f"TRACK conf={track.conf:.2f} lost={track.lost_frames}",
+                        (x1, min(frame.shape[0]-10, y2+20)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+
+        # status
+        txt = f"{self.state.name} | camFPS={self.camera.fps:.1f}"
+        cv2.putText(frame, txt, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 2)

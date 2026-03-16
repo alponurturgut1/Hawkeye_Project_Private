@@ -1,0 +1,30 @@
+# Python bytecode ve cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Sanal ortamlar
+venv/
+env/
+.venv/
+bin/
+lib/
+include/
+share/
+*.pyc
+__pycache__/
+# Pymavlink, MAVProxy ve ArduPilot logları/parametreleri
+*.log
+*.tlog
+*.rlog
+*.plog
+mav.parm
+*.stg
+
+# IDE ayarları (isteğe bağlı)
+.vscode/
+.idea/
+
+# İşletim sistemi çöpleri
+.DS_Store
+Thumbs.db

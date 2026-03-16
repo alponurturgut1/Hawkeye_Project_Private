@@ -1,0 +1,58 @@
+system:
+  target_fps: 30
+  display: true           # imshow aç/kapa
+  log_level: INFO
+
+video:
+  # Hunter kamera stream: en hızlı ve stabil yöntem
+  # GStreamer ile UDP H264 akışı alıyorsan pipeline gir
+  #use_gstreamer: true
+  #gstreamer_pipeline: >
+  #  udpsrc port=5600 caps="application/x-rtp, media=video, encoding-name=H264, payload=96" !
+  #  rtph264depay ! h264parse ! avdec_h264 !
+  #  videoconvert ! appsink drop=true sync=false max-buffers=1
+
+  # Eğer direkt OpenCV kaynağın varsa:
+  #opencv_source: 0        # webcam/rtsp vs: "rtsp://..."
+  #width: 1280
+  #height: 720
+  udp_ip: "127.0.0.1"
+  udp_port: 5600
+  width: 640
+  height: 480
+
+yolo:
+#onnx i göstercek değişicek
+  onnx_path: "/home/ismet-mete-baykasoglu/uav_tracking/bestson.onnx"
+  input_size: 640
+  #0.35
+  #0.1 di
+  conf_thres: 0.25 # 0.40 dı 0.50 di
+  iou_thres: 0.45
+  class_name: "drone"     # dataset’inde IRIS hangi class ise
+  providers:
+    - "CUDAExecutionProvider"
+    - "CPUExecutionProvider"
+
+tracking: #son 12.31 değişenler feb 12
+  max_lost_frames: 10 #20 #30 öneriyor kalman için
+  iou_match_thres: 0.20  #0.30 du
+  smooth_alpha: 0.90  #0.25 di    # bbox smoothing 0.15 veya 0.10 olabilir
+
+mavlink:
+  hunter:
+    conn: "udp:127.0.0.1:14570"
+    sysid: 1
+  target:
+    conn: "udp:127.0.0.1:14580"  #60 tı sonu
+    sysid: 2
+
+follow:
+  # Hunter fixed-wing takip parametreleri
+  follow_alt_m: 30.0 #bak 60 tı
+  follow_distance_m: 30.0 #bak
+  reposition_period_s: 0.3    # ~3 Hz reposition (uçak için yeterli)
+  max_bearing_deg: 35.0       # görüntüde fazla sapmada agresif gitme
+  bearing_kp: 0.9             # bearing error -> offset scaling
+  home_rtl_on_lost: true
+  lost_timeout_s: 4.0

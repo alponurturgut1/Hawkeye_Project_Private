@@ -1,0 +1,83 @@
+
+
+//Gazebo çalıştırma 
+
+source ~/venv-ardupilot/bin/activate
+
+cd ~/SITL_Models/Gazebo/worlds
+
+export GZ_SIM_RESOURCE_PATH=$HOME/SITL_Models/Gazebo/models:$HOME/SITL_Models/Gazebo/worlds
+
+export GZ_SIM_SYSTEM_PLUGIN_PATH=$HOME/ardupilot_gazebo/build:$GZ_SIM_SYSTEM_PLUGIN_PATH
+
+export __GLX_VENDOR_LIBRARY_NAME=nvidia
+export __NV_PRIME_RENDER_OFFLOAD=1
+
+gz sim -v4 -r dual_vtail_runway.sdf
+
+
+//mini talon uav bağlama
+
+cd ~/ardupilot
+./Tools/autotest/sim_vehicle.py -v ArduPlane -f JSON --model JSON \
+--add-param-file=$HOME/SITL_Models/Gazebo/config/mini_talon_vtail.param \
+--console --map -I0 \
+--out=udp:127.0.0.1:14570 \
+--custom-location=38.700853,27.453821,10,0
+
+//Drone u bağlama
+
+cd ~/ardupilot
+./Tools/autotest/sim_vehicle.py -v ArduCopter -f JSON --model JSON \
+ \
+--console --map -I1 \
+--out=udp:127.0.0.1:14580 \
+--custom-location=38.700853,27.453821,10,0
+
+
+//ilk drone havalancak 
+//ama sıkıntılı bu komutları aynen gir
+
+STABILIZE> mode guided
+GUIDED> param set FRAME_CLASS 1
+GUIDED> param set FRAME_TYPE 1
+//2 saniye bekle
+GUIDED> reboot
+// 5  saniye bekle
+STABILIZE> mode guided
+GUIDED> arm throttle force
+//olmassa bekle tekrar mav terminalinde kırmızı gidince
+//pre arm yazınca yazmasa da olur kırmızılar gitsin
+GUIDED> arm throttle force
+GUIDED> takeoff 20
+
+
+//buradan sonra haritadan fly to yapılabir 40 metrede
+//yada rota da verilebilir rota.txt yi yapay zekaya sor yazsın
+// 
+wp load rota.txt
+mode AUTO
+
+//hızı ayarlamak için 10 ile bölünür
+param set WPNAV_SPEED 1500
+
+
+
+
+//Uav i mini talon  havalandırma terminalinde
+
+MANUAL> MANUAL> mode guided
+GUIDED> GUIDED> arm throttle
+GUIDED> mode TAKEOFF
+
+
+
+//Ayrı bir terminalde bu bridge.py ye göre değişir
+python3 /home/ismet-mete-baykasoglu/Desktop/python_bridge/bridge.py
+
+//bundan sonra yine başka terminalde asıl kod 
+//dosyanın içine girmeyi unutma
+
+cd ~/uav_tracking
+source .venv/bin/activate
+python run_track.py
