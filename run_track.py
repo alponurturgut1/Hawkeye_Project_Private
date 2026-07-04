@@ -3,7 +3,7 @@ import time
 
 def main():
     system = DroneTrackingSystem(config_path="config.yaml")
-    
+#    
     """"""
     system.hunter.connect()
     system.target.connect()
