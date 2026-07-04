@@ -11,7 +11,7 @@ class PositionBasedFollow:
     def compute_follow_point(self, target_lat, target_lon, target_heading_deg,
                              bearing_error_deg):
         
-        #Takip fikri:
+        #Takip fikri: a
         #- hedefin heading’ine göre arkasında follow_distance_m kadar geride bir GPS noktası üret
         #- bearing error (kameradan) büyükse, noktayı hafif yana kaydır (uçağın yaklaşımını düzeltir)
         
