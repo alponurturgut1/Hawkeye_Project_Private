@@ -9,7 +9,7 @@
 #         self.conf = conf
 #         self.class_id = class_id
 #         self.class_name = class_name
-
+#
 #     def center(self):
 #         x1, y1, x2, y2 = self.bbox_xyxy
 #         return (0.5 * (x1 + x2), 0.5 * (y1 + y2))
